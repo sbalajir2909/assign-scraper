@@ -10,11 +10,11 @@ Respond ONLY with valid JSON in this exact shape, no text before or after:
   "gist": {
     "emphasis": "2-3 sentences on what this course emphasizes and why, specific to the learner's goal",
     "outcomes": [
-      "Build a working ML classifier from scratch using scikit-learn",
-      "Implement and evaluate a supervised learning model on real data",
-      "Debug common ML errors like overfitting and data leakage"
+      "Build a working X from scratch using Y",
+      "Implement and debug Z in a real project",
+      "Design and deploy A using B"
     ],
-    "prereqs": ["Basic Python programming knowledge"]
+    "prereqs": ["Specific prereq 1"]
   },
   "concepts": [
     {
@@ -24,20 +24,20 @@ Respond ONLY with valid JSON in this exact shape, no text before or after:
       "subtopics": ["subtopic 1", "subtopic 2", "subtopic 3"],
       "estimatedMinutes": 20,
       "prereq": null,
-      "sources": ["Wikipedia", "OpenAlex"]
+      "sources": ["Wikipedia", "npm"]
     }
   ]
 }
 
 CRITICAL RULES:
-- outcomes MUST be full sentences starting with action verbs: "Build X", "Implement Y", "Debug Z", "Design A", "Analyze B", "Train C", "Deploy D" — never single words
-- concept titles MUST be specific — never use: Introduction, Basics, Overview, Fundamentals, Getting Started, Summary, Advanced Topics
-- estimatedMinutes: 10-45 per concept, realistic for the learner's time
-- prereq: exact title of a previous concept in this list, or null — never an array
+- outcomes MUST be full sentences starting with action verbs — never single words
+- concept titles MUST be specific — never: Introduction, Basics, Overview, Fundamentals, Getting Started
+- estimatedMinutes: 10-45 per concept
+- prereq: exact title of a previous concept or null — never an array
 - 5-8 concepts ordered foundational to advanced
-- Use Wikipedia sections as subtopics
-- Use Stack Overflow pain points to decide what to emphasize
-- prereqs in gist: only external knowledge needed before starting, empty array if none`
+- if npm/devdocs data is present, use it heavily — it's the most accurate source for dev tools
+- if devdocs entries are present, use them as concept titles and subtopics
+- prereqs in gist: only external knowledge needed before starting`
 
 export async function synthesizeCourse(context: ScrapedContext, profile: LearnerProfile): Promise<Course | null> {
   if (!GROQ_API_KEY) throw new Error('GROQ_API_KEY not set')
@@ -47,13 +47,13 @@ export async function synthesizeCourse(context: ScrapedContext, profile: Learner
   const prompt = `Learner profile:
 - Topic: ${profile.topic}
 - Current level: ${profile.level}
-- Goal: ${profile.goal}  
+- Goal: ${profile.goal}
 - Available time: ${profile.time}
 
-Real knowledge context from multiple sources:
+Real knowledge from multiple sources:
 ${contextSummary}
 
-Build the best possible course for this exact learner. Use the scraped context heavily — ground concept ordering in the Wikidata knowledge graph, use Wikipedia sections as subtopics, surface Stack Overflow pain points in the curriculum.`
+Build the best possible course. If npm or devdocs data is present, prioritize it heavily for concept structure.`
 
   const res = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
     model: 'llama-3.3-70b-versatile',
@@ -84,7 +84,9 @@ Build the best possible course for this exact learner. Use the scraped context h
         wikidata: !!context.wikidata,
         openAlex: !!context.openAlex,
         stackOverflow: !!context.stackOverflow,
-        github: !!context.github
+        github: !!context.github,
+        npm: !!context.npm,
+        devdocs: !!context.devdocs,
       }
     }
     return course
@@ -97,34 +99,48 @@ Build the best possible course for this exact learner. Use the scraped context h
 function buildContextSummary(context: ScrapedContext): string {
   const parts: string[] = []
 
+  if (context.npm) {
+    parts.push(`=== NPM PACKAGE (highest priority for this tool) ===
+Package: ${context.npm.name}
+Description: ${context.npm.description}
+Keywords: ${context.npm.keywords.join(', ')}
+README excerpt: ${context.npm.readme.slice(0, 1500)}`)
+  }
+
+  if (context.devdocs) {
+    parts.push(`=== DEVDOCS (official documentation structure) ===
+Docset: ${context.devdocs.docset}
+Topics/sections: ${context.devdocs.topicsFound.join(', ')}`)
+  }
+
   if (context.wikipedia) {
     parts.push(`=== WIKIPEDIA ===
-Summary: ${context.wikipedia.summary.slice(0, 600)}
-Sections (use these as subtopics): ${context.wikipedia.sections.join(', ')}
-Related topics: ${context.wikipedia.relatedTopics.join(', ')}`)
+Summary: ${context.wikipedia.summary.slice(0, 500)}
+Sections: ${context.wikipedia.sections.join(', ')}
+Related: ${context.wikipedia.relatedTopics.join(', ')}`)
   }
 
   if (context.wikidata) {
     parts.push(`=== WIKIDATA KNOWLEDGE GRAPH ===
-Broader concepts (good prereqs): ${context.wikidata.broader.join(', ')}
-Narrower concepts (good subtopics/advanced concepts): ${context.wikidata.narrower.join(', ')}`)
+Broader (prereqs): ${context.wikidata.broader.join(', ')}
+Narrower (subtopics): ${context.wikidata.narrower.join(', ')}`)
   }
 
   if (context.openAlex) {
     parts.push(`=== OPENALEX ACADEMIC ===
-Related academic concepts: ${context.openAlex.topConcepts.join(', ')}
+Related concepts: ${context.openAlex.topConcepts.join(', ')}
 Related fields: ${context.openAlex.relatedFields.join(', ')}`)
   }
 
   if (context.stackOverflow) {
     parts.push(`=== STACK OVERFLOW PAIN POINTS ===
-What learners struggle with most: ${context.stackOverflow.commonPainPoints.join(' | ')}
+What learners struggle with: ${context.stackOverflow.commonPainPoints.join(' | ')}
 Top questions: ${context.stackOverflow.topQuestions.slice(0, 5).map(q => q.title).join(' | ')}`)
   }
 
   if (context.github) {
-    parts.push(`=== GITHUB COMMUNITY ===
-Top learning resources: ${context.github.topRepos.slice(0, 3).map(r => r.name + ': ' + r.description).join(' | ')}`)
+    parts.push(`=== GITHUB ===
+Top repos: ${context.github.topRepos.slice(0, 3).map(r => r.name + ': ' + r.description).join(' | ')}`)
   }
 
   return parts.join('\n\n') || 'No external context — use your knowledge.'
@@ -134,5 +150,6 @@ function collectSources(context: ScrapedContext): string[] {
   const sources: string[] = []
   if (context.wikipedia) sources.push(context.wikipedia.url)
   if (context.openAlex) sources.push(context.openAlex.url)
+  if (context.npm?.repoUrl) sources.push(context.npm.repoUrl)
   return sources
 }

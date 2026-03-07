@@ -39,6 +39,8 @@ export interface ValidationReport {
     openAlex: boolean
     stackOverflow: boolean
     github: boolean
+    npm: boolean
+    devdocs: boolean
   }
 }
 
@@ -48,6 +50,8 @@ export interface ScrapedContext {
   openAlex: OpenAlexResult | null
   stackOverflow: StackOverflowResult | null
   github: GithubResult | null
+  npm: NpmResult | null
+  devdocs: DevDocsResult | null
 }
 
 export interface WikipediaResult {
@@ -79,4 +83,18 @@ export interface GithubResult {
   awesomeList: string | null
   topRepos: { name: string; description: string }[]
   learningResources: string[]
+}
+
+export interface NpmResult {
+  name: string
+  description: string
+  readme: string
+  keywords: string[]
+  repoUrl: string | null
+}
+
+export interface DevDocsResult {
+  docset: string
+  entries: { name: string; path: string; type: string }[]
+  topicsFound: string[]
 }

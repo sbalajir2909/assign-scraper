@@ -5,6 +5,8 @@ import { scrapeWikidata } from './scrapers/wikidata'
 import { scrapeOpenAlex } from './scrapers/openAlex'
 import { scrapeStackOverflow } from './scrapers/stackoverflow'
 import { scrapeGithub } from './scrapers/github'
+import { scrapeNpm } from './scrapers/npm'
+import { scrapeDevDocs } from './scrapers/devdocs'
 import { synthesizeCourse } from './agents/synthesizer'
 import { validateSchema } from './validators/schemaValidator'
 import { validateMetadata } from './validators/metadataValidator'
@@ -16,6 +18,13 @@ app.use(express.json())
 
 app.get('/health', (_, res) => res.json({ status: 'ok' }))
 
+// detect if topic looks like a dev tool / package
+function isDevTool(topic: string): boolean {
+  const devKeywords = ['sdk', 'api', 'framework', 'library', 'cli', 'npm', 'package', 'hook', 'router', 'orm', 'db', 'auth', 'react', 'vue', 'next', 'nuxt', 'express', 'fastapi', 'django', 'rails', 'prisma', 'supabase', 'firebase', 'tailwind', 'webpack', 'vite', 'babel', 'eslint', 'jest', 'cypress']
+  const lower = topic.toLowerCase()
+  return devKeywords.some(k => lower.includes(k))
+}
+
 app.post('/scrape', async (req, res) => {
   const profile: LearnerProfile = req.body
 
@@ -25,13 +34,17 @@ app.post('/scrape', async (req, res) => {
 
   console.log(`[scrape] topic="${profile.topic}" level="${profile.level}" goal="${profile.goal}"`)
 
-  // ── Run all scrapers in parallel ─────────────────────────────────────────
-  const [wikipedia, wikidata, openAlex, stackOverflow, github] = await Promise.allSettled([
+  const isTool = isDevTool(profile.topic)
+
+  // run all scrapers in parallel — prioritize npm + devdocs for dev tools
+  const [wikipedia, wikidata, openAlex, stackOverflow, github, npm, devdocs] = await Promise.allSettled([
     scrapeWikipedia(profile.topic),
     scrapeWikidata(profile.topic),
-    scrapeOpenAlex(profile.topic),
+    isTool ? Promise.resolve(null) : scrapeOpenAlex(profile.topic), // skip for dev tools
     scrapeStackOverflow(profile.topic),
-    scrapeGithub(profile.topic)
+    scrapeGithub(profile.topic),
+    isTool ? scrapeNpm(profile.topic) : Promise.resolve(null),
+    isTool ? scrapeDevDocs(profile.topic) : Promise.resolve(null),
   ])
 
   const context: ScrapedContext = {
@@ -40,38 +53,52 @@ app.post('/scrape', async (req, res) => {
     openAlex: openAlex.status === 'fulfilled' ? openAlex.value : null,
     stackOverflow: stackOverflow.status === 'fulfilled' ? stackOverflow.value : null,
     github: github.status === 'fulfilled' ? github.value : null,
+    npm: npm.status === 'fulfilled' ? npm.value : null,
+    devdocs: devdocs.status === 'fulfilled' ? devdocs.value : null,
   }
 
-  console.log(`[scrape] sources: wiki=${!!context.wikipedia} wikidata=${!!context.wikidata} openAlex=${!!context.openAlex} so=${!!context.stackOverflow} gh=${!!context.github}`)
+  const sourcesHit = Object.entries(context)
+    .filter(([, v]) => v !== null)
+    .map(([k]) => k)
 
-  // ── Synthesize course ────────────────────────────────────────────────────
+  console.log(`[scrape] sources: ${sourcesHit.join(', ')}`)
+
   const course = await synthesizeCourse(context, profile)
   if (!course) {
     return res.status(500).json({ error: 'Course synthesis failed' })
   }
 
-  // ── Schema validation ────────────────────────────────────────────────────
+  // schema validation
   const schemaCheck = validateSchema(course)
   if (!schemaCheck.valid) {
     console.warn('[validate] Schema errors:', schemaCheck.errors)
     course.validationReport.errors.push(...schemaCheck.errors)
   }
 
-  // ── Metadata validation + auto-fix ──────────────────────────────────────
+  // metadata validation + auto-fix
   const scrapedTitles = [
     ...(context.wikidata?.narrower || []),
     ...(context.openAlex?.topConcepts || []),
-    ...(context.wikipedia?.sections || [])
+    ...(context.wikipedia?.sections || []),
+    ...(context.devdocs?.topicsFound || []),
   ]
   const metaReport = validateMetadata(course, scrapedTitles)
   course.validationReport = {
     ...metaReport,
-    sourcesCoverage: course.validationReport.sourcesCoverage
+    sourcesCoverage: {
+      wikipedia: !!context.wikipedia,
+      wikidata: !!context.wikidata,
+      openAlex: !!context.openAlex,
+      stackOverflow: !!context.stackOverflow,
+      github: !!context.github,
+      npm: !!context.npm,
+      devdocs: !!context.devdocs,
+    }
   }
 
-  console.log(`[validate] passed=${metaReport.passed} fixes=${metaReport.autoFixed.length} warnings=${metaReport.warnings.length} errors=${metaReport.errors.length}`)
+  console.log(`[validate] passed=${metaReport.passed} fixes=${metaReport.autoFixed.length} warnings=${metaReport.warnings.length}`)
 
-  return res.json({ course, context: { sourcesHit: Object.entries(context).filter(([, v]) => v !== null).map(([k]) => k) } })
+  return res.json({ course, context: { sourcesHit } })
 })
 
 const PORT = process.env.PORT || 3001
